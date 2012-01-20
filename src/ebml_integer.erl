@@ -58,42 +58,22 @@ decode_long(B, W, S) ->
 
 
 
-
 encode(X) when is_integer(X) -> 
-	L = bit_length_of_integer(X),
-	W = bit_length_to_width(L),
-	S = ceiling_bit_length(L),
+	W = width_of_integer(X),
+	S = W*7,
 	<<1:W, X:S>>.
 
 
-bit_length_of_integer(X) ->
-	bit_length_of_integer(X, 0).
-
-
-bit_length_of_integer(0, L) ->
-	L;
-bit_length_of_integer(X, L) ->
-	bit_length_of_integer(X bsr 1, L+1).
-
-
-bit_length_to_width(0) ->
+width_of_integer(0) ->
 	1;
-bit_length_to_width(X) ->
-	D = X div 7,
-	case X rem 7 of
-	0 -> D;
-	_ -> D+1
-	end.
+width_of_integer(X) ->
+	width_of_integer(X, 0).
 
 
-ceiling_bit_length(0) ->
-	7;
-ceiling_bit_length(X) ->
-	case X rem 7 of
-	0 -> X;
-	R -> 
-		X + 7 - R
-	end.
+width_of_integer(0, W) ->
+	W;
+width_of_integer(X, W) ->
+	width_of_integer(X bsr 7, W+1).
 	
 
 	
@@ -101,39 +81,13 @@ ceiling_bit_length(X) ->
 -include_lib("eunit/include/eunit.hrl").
 -define(M, ?MODULE).
 
-bit_length_of_integer_test_() ->
-	F = fun bit_length_of_integer/1,
-    [?_assertEqual(F(0), 0)
-    ,?_assertEqual(F(1), 1)
-    ,?_assertEqual(F(3), 2)
-    ,?_assertEqual(F(255), 8)
-	].
-
-
-bit_length_to_width_test_() ->
-	F = fun bit_length_to_width/1,
-    [?_assertEqual(F(0), 1)
-    ,?_assertEqual(F(1), 1)
-    ,?_assertEqual(F(14), 2)
-    ,?_assertEqual(F(15), 3)
-	].
-
-
-
-ceiling_bit_length_test_() ->
-	F = fun ceiling_bit_length/1,
-    [?_assertEqual(F(0), 7)
-    ,?_assertEqual(F(1), 7)
-	,?_assertEqual(F(6), 7)
-    ,?_assertEqual(F(13), 14)
-	].
-
 encode_test_() ->
 	E = fun ?M:encode/1,
 	D = fun ?M:decode/1,
     [?_assertEqual(D(E(100)), {100, <<>>})
 	,?_assertEqual(D(E(666)), {666, <<>>})
 	,?_assertEqual(D(E(0)), {0, <<>>})
+	,?_assertEqual(D(E(1)), {1, <<>>})
 	].
 
 -endif.

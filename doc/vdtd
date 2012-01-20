@@ -1,0 +1,971 @@
+#! /usr/bin/env pike
+//  -*- pike -*-
+
+// EDTD validator for EBML DTD files.
+
+// This is the current token context being parsed. Used for error
+// messages.
+string token;
+
+class Exception {
+  constant is_exception=1;
+  string err;
+  void create(string e, mixed ... args) {
+    err = sprintf(e, @args);
+  }
+}
+
+// Represents an EDTD file during parsing.
+class File {
+  Stdio.File f;
+  string name;
+  int line = 1;
+
+  void create(string fn) {
+    name = fn;
+
+    if( catch( f = Stdio.File(fn,"r") )) {
+      werror("Failed to open %O.\n", fn);
+      exit(1);
+    }
+  }
+
+  string buf = "";
+
+  // Lookahead @[chars] number of characters.
+  string peek(int chars) {
+    if(sizeof(buf)<chars)
+      buf += f->read(chars-sizeof(buf));
+    if(sizeof(buf)<chars)
+      throw(Exception("Unexpected end of file.\n"));
+    return buf[..chars-1];
+  }
+
+  // Read @[chars] number of characters.
+  string read(int chars) {
+    string ret;
+    if(sizeof(buf)>=chars) {
+      ret = buf[..chars-1];
+      buf = buf[chars..];
+    }
+    else {
+      ret = buf;
+      buf = "";
+      ret += f->read(chars-sizeof(ret));
+    }
+    if(sizeof(ret)<chars)
+      throw(Exception("Unexpected end of file.\n"));
+    line += String.count(ret,"\n");
+    return ret;
+  }
+
+  // Eat the string @[tok] from file.
+  void eat(string tok) {
+    string t = lower_case(read(sizeof(tok)));
+    if(t!=tok)
+      throw(Exception("Unexpected token %O in line %d while parsing %O. "
+		      "Expected %O.\n", t, line, token, tok));
+  }
+
+  // Eat all whitespaces.
+  void eat_s() {
+    while( (< " ", "\n", "\r", "\t" >)[peek(1)] ) read(1);
+    catch { // Catch EOF
+      if(peek(2)=="//") {
+	while( peek(1)!="\n" ) read(1);
+	eat_s();
+	return;
+      }
+      if(peek(2)=="/*") {
+	while( peek(2)!="*/" ) read(1);
+	eat_s();
+	return;
+      }
+    };
+  }
+
+  // Eat a string until any of the stop characters or whitespace.
+  string read_string(string ... stop) {
+    string ret = "";
+    multiset m = (< " ", "\n", "\r", "\t" >) + (multiset)stop;
+    while( !m[peek(1)] ) ret += read(1);
+    return ret;
+  }
+
+  // Read digits.
+  string read_digit() {
+    string ret = "";
+    while( (< "1", "2", "3", "4", "5", "6", "7", "8", "9",
+	      "0" >)[lower_case(peek(1))] )
+      ret += read(1);
+    return ret;
+  }
+
+  // Read hexdigits
+  string read_hexdigit() {
+    string ret = "";
+    while( (< "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+	      "a", "b", "c", "d", "e", "f" >)[lower_case(peek(1))] )
+      ret += read(1);
+    return ret;
+  }
+
+  string read_int_def() {
+    string ret = "";
+    if(peek(1)=="-")
+      ret = read(1);
+    ret += read_digit();
+    return ret;
+  }
+
+  string read_float_def() {
+    string v = read_digit();
+    v += ".";
+    eat(".");
+    v += read_digit();
+    if( (< "e", "E" >)[ peek(1) ] ) {
+      v += read(1);
+      if( (< "+", "-" >)[ peek(1) ] )
+	v += read(1);
+      v += read_digit();
+    }
+  }
+
+  string read_string_def() {
+    if( (< "0x", "0X" >)[ peek(2) ] ) {
+      read(2);
+      return String.hex2string(read_hexdigit());
+    }
+    eat("\"");
+    string ret = read_string("\"");
+    // FIXME: Check for characters out of range.
+    eat("\"");
+    return ret;
+  }
+
+  string read_date_def() {
+    string v = read_digit();
+
+    void read_n_digits(int n, string t) {
+      string tmp = read_digit();
+      if( sizeof(tmp)!=n )
+	throw(Exception("Expected %d digit hour in date definition "
+			"in line %d while parsing %O.", n, line, token));
+      v += tmp;
+    };
+
+    if( peek(1)=="T" ) {
+      read_n_digits(2,"hour");
+      v += ":";
+      eat(":");
+
+      read_n_digits(2,"minute");
+      v += ":";
+      eat(":");
+
+      read_n_digits(2,"second");
+
+      if( peek(1)=="." ) {
+	v += ".";
+	eat(".");
+	read_n_digits(1,"fraction");
+	v += read_digit();
+      }
+    }
+
+    return v;
+  }
+
+}
+
+class Range {
+  int has_low;
+  int has_high;
+  int|float low;
+  int|float high;
+
+  void set_low(int|float v) {
+    has_low = 1;
+    low = v;
+    if(has_high && low>high) {
+      werror("Range %s is reversed (high<low).\n", cast("string"));
+      [ high, low ] = ({ low, high });
+    }
+  }
+
+  void set_high(int|float v) {
+    has_high = 1;
+    high = v;
+    if(has_low && low>high) {
+      werror("Range %s is reversed (high<low).\n", cast("string"));
+      [ high, low ] = ({ low, high });
+    }
+  }
+
+  void create(void|mapping x) {
+    if(!x) return;
+    if(!zero_type(x->high)) set_high(x->high);
+    if(!zero_type(x->low)) set_low(x->low);
+  }
+
+  int(0..1) overlap(Range r) {
+    if(has_low && r->has_high && low>r->high) return 0;
+    if(has_high && r->has_low && high<r->low) return 0;
+    return 1;
+  }
+
+  void merge(Range r) {
+    Range new = Range();
+    if(has_low && r->has_low)
+      new->set_low( min(low, r->low) );
+    if(has_high && r->has_high)
+      new->set_high( max(high, r->high) );
+
+    low = new->low;
+    high = new->high;
+    has_low = new->has_low;
+    has_high = new->has_high;
+  }
+
+  int(0..1) in_range(int|float i) {
+    return (!has_low || i>=low) && (!has_high || i<=high);
+  }
+
+  int(0..1) is_inside(Range r) {
+    return (r->has_low?in_range(r->low):!has_low) &&
+      (r->has_high?in_range(r->high):!has_high);
+  }
+
+  mixed cast(string to) {
+    if(to!="string") error("Can not cast to %s.\n", to);
+    string ret = "";
+    if(has_low) ret += low;
+    ret += "..";
+    if(has_high) ret += high;
+    return ret;
+  }
+
+  string _sprintf(int t) {
+    return t=='O' && sprintf("%O(%s)", this_program, cast("string"));
+  }
+}
+
+class SuperRange {
+  array(Range) ranges = ({});
+
+  void add_range(Range|SuperRange r) {
+    if(r->ranges)
+      foreach(r->ranges, Range r)
+	_add_range(r);
+    else
+      _add_range(r);
+  }
+
+  void _add_range(Range r) {
+    foreach(ranges, Range s)
+      if(s->overlap(r)) {
+	s->merge(r);
+	return;
+      }
+    ranges += ({r});
+  }
+
+  int(0..1) in_range(int|float i) {
+    foreach(ranges, Range r)
+      if(r->in_range(i))
+	return 1;
+    return 0;
+  }
+
+  Range overlap(SuperRange|Range r) {
+    if(r->ranges)
+      foreach(r->ranges, Range r) {
+	r = _overlap(r);
+	if(r) return r;
+      }
+    else
+      return _overlap(r);
+  }
+
+  Range _overlap(Range r) {
+    foreach(ranges, Range s)
+      if(s->overlap(r))
+	return s;
+    return 0;
+  }
+}
+
+class Type {
+  SuperRange range;
+  string base_type;
+
+  int has_default;
+  mixed default_value;
+
+  void create(string t, void|Range r) {
+    base_type = t;
+    if(r) add_range(r);
+  }
+
+  void add_range(Range r) {
+    if(!range) range = SuperRange();
+    Range s = range->overlap(r);
+    if(s)
+      werror("Range %s overlaps previous range %s.\n",
+	     (string)r, (string)s);
+    range->add_range(r);
+  }
+  void set_default(mixed v) {
+    has_default = 1;
+    default_value = v;
+  }
+
+  string _sprintf(int t) {
+    return t=='O' && sprintf("%O(%s)", this_program, base_type);
+  }
+}
+
+class ContainerType {
+  inherit Type;
+  void add_range(Range r) {
+    werror("Range is not applicable for containers.\n");
+  }
+  void set_default(mixed v) {
+    werror("Default is not applicable for containers.\n");
+  }
+}
+
+// Used to verify element names.
+Regexp.SimpleRegexp namecheck = Regexp("^[A-Za-z0-9_]*$");
+
+//! Represents an Element.
+class Element {
+
+  // Debug
+  File file;
+  int line; // Where definition starts.
+
+  void create(File f) {
+    file = f;
+    line = f->line;
+  }
+
+  // Essential properties
+
+  multiset parents = (<>);
+  multiset children = (<>);
+  string name;
+  string id; int iid;
+  Type type;
+  string base_type;
+
+  void add_parent(string name) {
+    if(!namecheck->match(name))
+      complain("Illegal characters in parent name %O.\n", name);
+    parents[name] = 1;
+  }
+  void set_name(string n) {
+    if(!namecheck->match(n))
+      complain("Illegal characters in name %O.\n", n);
+    name = n;
+  }
+  void set_id(string i) {
+    if(sizeof(i)%2) {
+      complain("ID %O not even number of characters.\n", i);
+      id = "";
+      return;
+    }
+
+    id = String.hex2string(i);
+    iid = array_sscanf(id, "%"+sizeof(id)+"c")[0] & (pow(2,sizeof(id)*7)-1);
+    if(iid==0 || iid==pow(2,sizeof(id)*7)-1)
+      complain("ID %O is reserved.\n", i);
+
+    float bits = iid?log((float)iid)/log(2.0):0;
+    int size = (int)(bits/7) + 1;
+    if(size!=sizeof(id) && iid!=pow(2,(int)ceil(bits))-1)
+      complain("ID %O not encoded in its shortest form.\n", i);
+  }
+  void set_type(Type t) {
+    type = t;
+    base_type = type->base_type;
+  }
+  void finalize() {
+    if(type->range) {
+      if(!range) range = SuperRange();
+      range->add_range(type->range);
+    }
+    if(type->has_default && !default_type)
+      set_default(type->default_value, base_type);
+  }
+
+
+  // Options
+
+  int low_level;
+  int high_level;
+  string card;
+  int ordered = 1;
+
+  string default_type;
+  mixed default_value;
+
+  SuperRange range;
+
+  void add_level(int low, void|int high) {
+    if(low<1)
+      complain("Lower level boundery must be 1 or more.\n");
+    else if(high && high<low)
+      complain("Higher level boundery less than the lower one.\n");
+    else {
+      low_level = low;
+      high_level = high;
+    }
+  }
+  void add_card(string t) {
+    if(!(< "*", "+", "1" >)[t])
+      complain("Unknown cardinality symbol %O.\n", t);
+    else
+      card = t;
+  }
+  void set_ordered(int o) {
+    ordered = o;
+  }
+  void set_default(mixed value, string type) {
+    if(default_type)
+      complain("Default value already set to %O (%O).\n",
+	       default_value, default_type);
+    default_value = value;
+    default_type = type;
+  }
+  void add_range(SuperRange|Range r) {
+    if(!range) range = SuperRange();
+    Range s = range->overlap(r);
+    if(s)
+      complain("Range %s overlaps previous range %O.\n",
+	       (string)r, (string)s);
+    range->add_range(r);
+  }
+
+
+  // -- Utilities
+
+  void complain(string e, mixed ... args) {
+    e = sprintf(e, @args);
+    werror("%s:%d: %s", file->name, line, e);
+  }
+
+  string _sprintf(int t) {
+    return t=='O' && sprintf("Element(%s)", name);
+  }
+}
+
+class DTD {
+
+  // id:Elment
+  mapping(string:Element) elements = ([]);
+
+  // id:value
+  object NIL = class{}();
+  mapping(string:mixed) def_lookback = ([]);
+
+  ADT.Stack in_progress = ADT.Stack();
+  Element|Type current;
+  void begin_element(File f) {
+    in_progress->push(current);
+    current = Element(f);
+    if(in_progress->top())
+      current->add_parent( in_progress->top()->name );
+  }
+  void end_element() {
+    if(elements[current->id])
+      werror("%s:%d: Element %O already added at line %d.\n",
+	     current->file->name, current->line, current->id,
+	     elements[current->id]->line);
+    elements[current->id] = current;
+    if(sizeof(in_progress)==1 && !current->low_level &&
+       !sizeof(current->parents))
+      current->add_level(1);
+    current = in_progress->pop();
+  }
+
+  void set_type(string type) {
+    if(!types[lower_case(type)])
+      current->complain("Unknown type %O.\n", type);
+    else
+      current->set_type( types[type] );
+  }
+
+  mapping(string:Type) types = ([
+    "int" : Type("int"),
+    "uint" : Type( "uint", Range((["low":0])) ),
+    "float" : Type("float"),
+    "date" : Type("date"),
+    "string" : Type("string"),
+    "binary" : Type("binary"),
+    "container" : ContainerType("container"),
+  ]);
+
+  void begin_type(string base) {
+    in_progress->push(current);
+    if(!types[base])
+      throw(Exception("Source type %O not defined.\n", base));
+    else
+      current = Type(types[base]->base_type);
+  }
+  void end_type(string name) {
+    if(types[name])
+      werror("Type %O already defined.\n", name);
+    else
+      types[name] = current;
+    current = in_progress->pop();
+  }
+
+  mapping header = ([
+    "ebmlversion" : 1,
+    "ebmlreadversion" : 1,
+    "ebmlmaxidlength" : 4,
+    "ebmlmaxsizelength" : 8,
+    "doctype" : "",
+    "doctypeversion" : 1,
+    "doctypereadversion" : 1,
+  ]);
+
+  void set_head_var(string var, string|int val) {
+    if(!header[var])
+      werror("Illegal header variable %O.\n", var);
+    else
+      header[var] = val;
+  }
+
+  void post_process() {
+
+    // Check for name duplicates
+    mapping(string:Element) names = ([]);
+    foreach(values(elements), Element e) {
+      string name = lower_case(e->name);
+      if(names[name]) {
+	array ems = ({ e, names[name] });
+	sort( ({ ems[0]->line, ems[1]->line }), ems );
+	werror("%s:%d: Element name %O already used at line %d.\n",
+	       ems[1]->file->name, ems[1]->line, name, ems[0]->line);
+      }
+      names[name] = e;
+    }
+
+    // Check for non-insertable elements.
+    // Internal check really.
+    foreach(values(elements), Element e)
+      if(!sizeof(e->parents) && !e->low_level)
+	werror("%s:%d: Element %O lacks both parents and levels.\n",
+	       e->file->name, e->line, e->name);
+
+    // Populate children with ID.
+    foreach(values(elements), Element e)
+      foreach(indices(e->parents), string p) {
+	p = lower_case(p);
+	if(!names[p])
+	  werror("%s:%d: Element %O refers to nonexistent parent %O.\n",
+		 e->file->name, e->line, e->name, p);
+	else
+	  names[p]->children[e->id] = 1;
+      }
+
+    // Analyze the parent structure.
+    multiset all = (multiset)values(elements);
+    void recurse(Element e) {
+      if(!all[e]) return;
+      all[e] = 0;
+      foreach(indices(e->children), string id) {
+	recurse(elements[id]);
+      }
+    };
+    foreach(values(elements), Element e)
+      if(e->low_level) recurse(e);
+    foreach(indices(all), Element e)
+      werror("%s:%d: Element %O can not be reached (cyclic parents?).\n",
+	     e->file->name, e->line, e->name);
+
+    // Initialize default lookback
+    foreach(values(elements), Element e)
+      if(e->default_type=="reference") {
+	string value = lower_case(e->default_value);
+	if(!names[value])
+	  werror("%s:%d: Default reference %O does not exist.\n",
+		 e->file->name, e->line, e->default_value);
+	else
+	  def_lookback[names[value]->id] = NIL;
+      }
+
+    // Check header
+    if(header->doctype=="")
+      werror("No header doctype declared.\n");
+    if(header->ebmlversion!=1)
+      werror("Illegal EBMLVersion %O.\n", header->ebmlversion);
+    if(header->ebmlreadversion!=1)
+      werror("Illegal EBMLReadVersion %O.\n", header->ebmlreadversion);
+    if(header->doctypeversion<header->doctypereadversion)
+      werror("DocTypeVersion less than DocTypeReadVersion.\n");
+    if(header->ebmlmaxidlength<1)
+      werror("EBMLMaxIDLength is less than one.\n");
+    if(header->ebmlmaxsizelength<1)
+      werror("EBMLMaxSizeLength is less than one.\n");
+
+    // Check id sizes
+    foreach(values(elements), Element e)
+      if(sizeof(e->id)>header->ebmlmaxidlength)
+	werror("%s:%d: %O ID larger than EBMLMaxIDLength %d.\n",
+	       e->file->name, e->line, e->name, header->ebmlmaxidlength);
+  }
+
+  string get_parse_table() {
+    string ret = #"static const struct {
+ int id; int type;
+} element_table[] = {
+";
+
+    mapping types = ([
+      "container":0,
+      "int":1, "uint":2, "float":3,
+      "string":4, "utf8":5, "date":6, "binary":7
+    ]);
+
+    array e = values(elements);
+    sort(e->iid, e);
+    foreach(e, Element e)
+      ret += sprintf("  { %08x, %d }, /* %s */\n",
+		     e->iid, types[e->type], e->name);
+    return ret + "};";
+  }
+
+}
+
+void parse_options(File f, DTD d) {
+  while(1) {
+    f->eat_s();
+    if(f->peek(1)=="]") break;
+
+    // OPTION
+    token = "OPTION";
+    string optype = lower_case(f->read_string(":"));
+    f->eat_s();
+    f->eat(":");
+    f->eat_s();
+    switch(optype) {
+    case "parent":
+      while(1) {
+	token = "PARENT";
+	d->current->add_parent( f->read_string(",",";") );
+	f->eat_s();
+	if(f->peek(1)==";") break;
+	f->eat(",");
+      }
+      break;
+    case "level":
+      token = "LEVEL";
+      int low = (int)f->read_digit();
+      if(f->peek(2)=="..") {
+	f->eat("..");
+	d->current->add_level(low, (int)f->read_digit());
+      }
+      else
+	d->current->add_level(low);
+      f->eat_s();
+      break;
+    case "card":
+      token = "CARD";
+      d->current->add_card( f->read(1) );
+      f->eat_s();
+      break;
+    case "ordered":
+      token = "ORDERED";
+      switch(lower_case(f->peek(1))) {
+      case "1":
+	f->eat("1");
+	d->current->set_ordered(1);
+	break;
+      case "yes":
+	f->eat("yes");
+	d->current->set_ordered(1);
+	break;
+      case "0":
+	f->eat("0");
+	d->current->set_ordered(0);
+	break;
+      case "no":
+	f->eat("no");
+	d->current->set_ordered(0);
+	break;
+      }
+      f->eat_s();
+      break;
+    case "def":
+      token = "DEF";
+      int next = f->peek(1)[0];
+      if( ( next>=65 && next<=90 ) || ( next>=97 && next<=122 ) ||
+	  next==96 )
+      {
+	// NAME
+	d->current->set_default(f->read_string(";"), "reference");
+      }
+      else {
+	switch(d->current->base_type) {
+	case "int":
+	  d->current->set_default( (int)f->read_int_def(), "int");
+	  break;
+	case "uint":
+	  d->current->set_default( (int)f->read_digit(), "uint");
+	  break;
+	case "float":
+	  d->current->set_default( (float)f->read_float_def(), "float");
+	  break;
+	case "string":
+	  // FIXME: Allows hex values, but it shouldn't
+	  d->current->set_default( f->read_string_def(), "string" );
+	  break;
+	case "utf8":
+	  d->current->set_default( f->read_string_def(), "utf8" );
+	  break;
+	case "date":
+	  d->current->set_default( f->read_date_def(), "date" );
+	  break;
+	case "binary":
+	  d->current->set_default( f->read_string_def(), "utf8" );
+	  break;
+	default:
+	  error("Illegal type.\n");
+	}
+      }
+      break;
+    case "range":
+      token = "RANGE";
+      while(1) {
+	f->eat_s();
+	Range r = Range();
+	switch(d->current->base_type) {
+	case "uint":
+	case "int":
+	case "binary":
+	case "utf8":
+	case "string":
+	  if(f->peek(2)=="..") {
+	    f->eat("..");
+	    r->set_high( (int)f->read_digit() );
+	  }
+	  else {
+	    r->set_low( (int)f->read_digit() );
+	    if(f->peek(2)=="..") {
+	      f->eat("..");
+	      if( !(< ";", "," >)[ f->peek(1) ] )
+		r->set_high( (int)f->read_digit() );
+	    }
+	    else
+	      r->set_high( r->low );
+	  }
+	  d->current->add_range(r);
+	  break;
+	case "float":
+	  // FIXME: Inclusive/exclusive
+	  if( f->peek(1)=="<" ) {
+	    f->eat("<");
+	    if(f->peek(1)=="=") f->eat("=");
+	    r->set_high( (float)f->read_float_def() );
+	  }
+	  else if( f->peek(1)==">" ) {
+	    f->eat(">");
+	    if(f->peek(1)=="=") f->eat("=");
+	    r->set_low( (float)f->read_float_def() );
+	  }
+	  else {
+	    r->set_low( (float)f->read_float_def() );
+	    f->eat("<");
+	    if(f->peek(1)=="=") f->eat("=");
+	    f->eat("..<");
+	    if(f->peek(1)=="=") f->eat("=");
+	    r->set_high( (float)f->read_float_def() );
+	  }
+	  d->current->add_range(r);
+	  break;
+	case "date":
+	  break;
+	}
+	f->eat_s();
+	if(f->peek(1)==";") break;
+	f->eat(",");
+      }
+      f->read_string(";");
+      break;
+    default:
+      string d = f->read_string(";");
+      break;
+    }
+    f->eat(";");
+  }
+  f->eat_s();
+}
+
+void parse_define_elements(File f, DTD d) {
+
+  // *(S / ELEMENT) "}"
+  while(1) {
+    f->eat_s();
+    if(f->peek(1)=="}") {
+      return;
+    }
+
+    // ELEMENT
+    d->begin_element(f);
+    token = "NAME";
+    d->current->set_name( f->read_string(":") );
+    f->eat_s();
+    f->eat(":=");
+    f->eat_s();
+    token = "ID";
+    d->current->set_id( f->read_hexdigit() );
+    f->eat_s();
+    token = "TYPE";
+    d->set_type( f->read_string(";","[") );
+    f->eat_s();
+
+    // OPTIONS
+    if(f->peek(1)=="[") {
+      token = "OPTIONS";
+      f->read(1);
+      parse_options(f,d);
+      f->eat("]");
+      f->eat_s();
+
+      if(f->peek(1)==";")
+	f->eat(";");
+      else if(d->current->base_type=="container" && f->peek(1)=="{") {
+	f->read(1); // {
+	parse_define_elements(f,d);
+	f->read(1); // }
+      }
+    }
+    else if(d->current->base_type=="container" && f->peek(1)=="{") {
+      f->read(1); // {
+      parse_define_elements(f,d);
+      f->read(1); // }
+    }
+    else
+      f->eat(";");
+
+    d->end_element();
+  }
+
+}
+
+void parse_define_types(File f, DTD d) {
+  while(1) {
+    f->eat_s();
+    if(f->peek(1)=="}") {
+      return;
+    }
+    token = "NAME";
+    string name = lower_case(f->read_string(":"));
+    f->eat_s();
+    f->eat(":=");
+    f->eat_s();
+    token = "TYPE";
+    string type = lower_case(f->read_string("[",";"));
+    d->begin_type(type);
+    f->eat_s();
+    if( f->peek(1)=="[" ) {
+      token = "OPTIONS";
+      f->read(1);
+      parse_options(f,d);
+      f->eat("]");
+      f->eat_s();
+
+      if( f->peek(1)==";" )
+	f->read(1);
+    }
+    else
+      f->eat(";");
+    d->end_type(name);
+  }
+}
+
+void parse_declare(File f, DTD d) {
+  while(1) {
+    f->eat_s();
+    if(f->peek(1)=="}") {
+      return;
+    }
+    string name = lower_case(f->read_string(":"));
+    f->eat_s();
+    f->eat(":=");
+    f->eat_s();
+    if( name == "doctype" )
+      d->set_head_var(name, f->read_string_def());
+    else
+      d->set_head_var(name, (int)f->read_digit());
+    f->eat_s();
+    f->eat(";");
+  }
+}
+
+void parse(File f, DTD d) {
+  while(1) {
+    token = "DTD";
+    if(catch(f->eat_s())) return;
+    string block = f->read_string();
+    f->eat_s();
+    switch(block) {
+    case "declare":
+      token = "HBLOCK";
+      if(f->read_string("{")!="header")
+	throw(Exception("Unexpected token after declare at line %d\n",
+			f->line));
+      f->eat_s();
+      f->eat("{");
+      parse_declare(f,d);
+      f->eat("}");
+      break;
+    case "define":
+      token = "EBLOCK";
+      switch(f->read_string("{")) {
+      case "elements":
+	f->eat_s();
+	f->eat("{");
+	parse_define_elements(f,d);
+	f->eat("}");
+	break;
+      case "types":
+	f->eat_s();
+	f->eat("{");
+	parse_define_types(f,d);
+	f->eat("}");
+	break;
+      default:
+	throw(Exception("Unexpected token after define at line %d\n",
+			f->line));
+      }
+      break;
+    }
+  }
+}
+
+
+int main(int c, array args) {
+  if(c<2) {
+    werror("No DTD given.\n");
+    return 1;
+  }
+
+  werror("Pass 1. (parser)\n");
+  DTD d = DTD();
+  mixed err = catch {
+    parse(File(args[1]),d);
+  };
+  if(err) {
+    if(!arrayp(err) && err->is_exception) {
+      werror(err->err);
+    }
+    else
+      throw(err);
+  }
+  werror("Pass 2. (analysis)\n");
+  d->post_process();
+}

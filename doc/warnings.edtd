@@ -1,0 +1,30 @@
+
+declare header {
+  Nonexistant := 27; // Unknown variable
+  EBMLVersion := 2; // Illegal version
+  EBMLReadVersion := 2; // Illegal version
+  DocTypeVersion := 1;
+  DocTypeReadVersion := 2; // Larger than DocTypeVersion
+  EBMLMaxSizeLength := 0; // Illegal value
+}
+
+define elements {
+  blä := a1 container; // Illegal name
+  x1 := 1 int; // Illegal ID
+  x2 := 80 int; // Reserved ID
+  x3 := ff int; // Reserved ID
+  x4 := 4001 int; // Not shortest form
+  x5 := 82 foo; // Unknown type
+
+  x6 := 83 int [ parent:blä; ] // Illegal parent name
+
+  // Cyclic
+  r1 := 84 container [ parent:r2; ]
+  r2 := 85 container [ parent:r1; ]
+
+  x7 := 86 int [ level:0; ] // Too low lower
+  x8 := 87 int [ level:2..1; ] // High lower than low
+  x9 := 88 int [ card:%; ] // Unknown symbol
+  xa := 89 int [ def:1; def:1; ] // Two defs.
+  xb := 8a int [ range:1..2,3..4,2..3; ] // Overlapping ranges
+}

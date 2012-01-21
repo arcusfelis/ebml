@@ -473,7 +473,9 @@ About this document
    ranges.
 
      FLOAT_RANGE = ( ("<" / "<="/ ">" / ">=") FLOAT_DEF ) /
-                   ( FLOAT_DEF "<"/"<=" ".." "<"/"<=" FLOAT_DEF )
+                   ( FLOAT_DEF      "<"    /  
+					 "<="    ".."   "<"  /   
+					 "<="       FLOAT_DEF )
 
    Date ranges has the same syntax and semantics as integer ranges,
    except that the actual date can be described either as an integer

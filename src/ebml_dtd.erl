@@ -123,8 +123,17 @@
 
 
 
+parse('ebml') ->
+	SrcList = load_standard_dtd(),
+	parse(SrcList);
+
+parse('matroska') ->
+	SrcList = load_matroska_dtd(),
+	parse(SrcList);
+
 parse(Str) ->
 	dtd(Str).
+
 
 
 run(T1, Funs, Acc1) ->
@@ -884,20 +893,51 @@ load_matroska_dtd() ->
 	binary_to_list(Bin).
 
 
-parse_matroska_dtd() ->
-	SrcList = load_matroska_dtd(),
-	parse(SrcList).
-
-
 load_standard_dtd() ->
 	Dir = code:priv_dir('ebml'),
 	{ok, Bin} = file:read_file(Dir ++ "/ebml.edtd"),
 	binary_to_list(Bin).
 
 
-parse_standard_dtd() ->
-	SrcList = load_standard_dtd(),
-	parse(SrcList).
+flatten(Schema) ->
+    Elems = Schema#dtd.eblock#eblock.elements,
+    flatten(Elems, []).
+
+flatten([H=#delement{type='container', id=Id} | T], Acc1) ->
+    H1 = H#delement{elements=[]},
+    Childrens1 = H#delement.elements,
+
+    F = fun(X=#delement{properties=Props1}) ->
+            Props3 = case lists:keytake(parents, 1, Props1) of
+                false -> 
+                    P2 = #parent{
+                            parents = [Id]
+                    },
+                    [P2|Props1];
+
+                {value, P1, Props2} ->
+                    P2 = #parent{
+                            parents = [Id | P1#parent.parents]
+                    },
+                    [P2|Props2]
+            end,
+            X#delement{ properties=Props3 };
+           (X) -> X end,
+
+    Childrens2 = lists:map(F, Childrens1),
+    Acc2 = flatten(Childrens2, [H1|Acc1]),
+    flatten(T, Acc2);
+
+flatten([H=#delement{}|T], Acc1) ->
+    flatten(T, [H|Acc1]);
+
+flatten([_|T], Acc1) ->
+    flatten(T, Acc1);
+
+flatten([], Acc1) -> Acc1.
+
+    
+
 
 
 dbg() ->
@@ -939,7 +979,7 @@ parse_test() ->
 	parse(Header ++ " " ++ Types).
 
 load_test() ->
-	List = load_matroska_dtd(),
-	parse(List).
+	parse('ebml'),
+    parse('matroska').
 
 -endif.

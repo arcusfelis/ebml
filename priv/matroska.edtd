@@ -1,0 +1,207 @@
+
+declare header {
+  DocType := "matroska";
+}
+define types {
+  crc32 := binary;
+  bool := uint [ range:0..1; ]
+  utf8 := string;
+}
+define elements {
+     Segment := 18538067 container [ card:*; ] {
+
+       // Meta Seek Information
+       SeekHead := 114d9b74 container [ card:*; ] {
+         Seek := 4dbb container [ card:*; ] {
+           SeekID := 53ab binary;
+           SeekPosition := 53ac uint;
+         }
+       }
+
+       // Segment Information
+       Info := 1549a966 container [ card:*; ] {
+         SegmentUID := 73a4 binary;
+         SegmentFilename := 7384 utf8;
+         PrevUID := 3cb923 binary;
+         PrevFilename := 3c83ab utf8;
+         NextUID := 3eb923 binary;
+         NextFilename := 3e83bb utf8;
+         TimecodeScale := 2ad7b1 uint [ def:1000000; ]
+         Duration := 4489 float [ range:>0.0; ]
+         DateUTC := 4461 date;
+         Title := 7ba9 utf8;
+         MuxingApp := 4d80 utf8;
+         WritingApp := 5741 utf8;
+       }
+
+       // Cluster
+       Cluster := 1f43b675 container [ card:*; ] {
+         Timecode := e7 uint;
+         Position := a7 uint;
+         PrevSize := ab uint;
+         BlockGroup := a0 container [ card:*; ] {
+           Block := a1 binary;
+           BlockVirtual := a2 binary;
+           BlockAdditions := 75a1 container {
+             BlockMore := a6 container [ card:*; ] {
+               BlockAddID := ee uint [ range:1..; ]
+               BlockAdditional := a5 binary;
+             }
+           }
+           BlockDuration := 9b uint [ def:TrackDuration; ];
+           ReferencePriority := fa uint;
+           ReferenceBlock := fb int [ card:*; ]
+           ReferenceVirtual := fd int;
+           CodecState := a4 binary;
+           Slices := 8e container [ card:*; ] {
+             TimeSlice := e8 container [ card:*; ] {
+               LaceNumber := cc uint [ def:0; ]
+               FrameNumber := cd uint [ def:0; ]
+               BlockAdditionID := cb uint [ def:0; ]
+               Delay := ce uint [ def:0; ]
+               Duration := cf uint [ def:TrackDuration; ];
+             }
+           }
+         }
+       }
+
+       // Track
+       Tracks := 1654ae6b container [ card:*; ] {
+         TrackEntry := ae container [ card:*; ] {
+           TrackNumber := d7 uint [ range:1..; ]
+           TrackUID := 73c5 uint [ range:1..; ]
+           TrackType := 83 uint [ range:1..254; ]
+           FlagEnabled := b9 uint [ range:0..1; def:1; ]
+           FlagDefault := 88 uint [ range:0..1; def:1; ]
+           FlagLacing  := 9c uint [ range:0..1; def:1; ]
+           MinCache := 6de7 uint [ def:0; ]
+           MaxCache := 6df8 uint;
+           DefaultDuration := 23e383 uint [ range:1..; ]
+           TrackTimecodeScale := 23314f float [ range:>0.0; def:1.0; ]
+           Name := 536e utf8;
+           Language := 22b59c string [ def:"eng"; ]
+           CodecID := 86 string;
+           CodecPrivate := 63a2 binary;
+           CodecName := 258688 utf8;
+           CodecSettings := 3a9697 utf8;
+           CodecInfoURL := 3b4040 string [ card:*; ]
+           CodecDownloadURL := 26b240 string [ card:*; ]
+           CodecDecodeAll := aa uint [ range:0..1; def:1; ]
+           TrackOverlay := 6fab uint;
+
+           // Video
+           Video := e0 container {
+             FlagInterlaced := 9a uint [ range:0..1; def:0; ]
+             StereoMode := 53b8 uint [ range:0..3; def:0; ]
+             PixelWidth := b0 uint [ range:1..; ]
+             PixelHeight := ba uint [ range:1..; ]
+             DisplayWidth := 54b0 uint [ def:PixelWidth; ]
+             DisplayHeight := 54ba uint [ def:PixelHeight; ]
+             DisplayUnit := 54b2 uint [ def:0; ]
+             AspectRatioType := 54b3 uint [ def:0; ]
+             ColourSpace := 2eb524 binary;
+             GammaValue := 2fb523 float [ range:>0.0; ]
+           }
+
+           // Audio
+           Audio := e1 container {
+             SamplingFrequency := b5 float [ range:>0.0; def:8000.0; ]
+             OutputSamplingFrequency := 78b5 float [ range:>0.0;
+                                                     def:8000.0; ]
+             Channels := 94 uint [ range:1..; def:1; ]
+             ChannelPositions := 7d7b binary;
+             BitDepth := 6264 uint [ range:1..; ]
+           }
+
+           // Content Encoding
+           ContentEncodings := 6d80 container {
+             ContentEncoding := 6240 container [ card:*; ] {
+               ContentEncodingOrder := 5031 uint [ def:0; ]
+               ContentEncodingScope := 5032 uint [ range:1..; def:1; ]
+               ContentEncodingType := 5033 uint;
+               ContentCompression := 5034 container {
+                 ContentCompAlgo := 4254 uint [ def:0; ]
+                 ContentCompSettings := 4255 binary;
+               }
+               ContentEncryption := 5035 container {
+                 ContentEncAlgo := 47e1 uint [ def:0; ]
+                 ContentEncKeyID := 47e2 binary;
+                 ContentSignature := 47e3 binary;
+                 ContentSigKeyID := 47e4 binary;
+                 ContentSigAlgo := 47e5 uint;
+                 ContentSigHashAlgo := 47e6 uint;
+               }
+             }
+           }
+         }
+       }
+
+       // Cueing Data
+       Cues := 1c53bb6b container {
+         CuePoint := bb container [ card:*; ] {
+           CueTime := b3 uint;
+           CueTrackPositions := b7 container [ card:*; ] {
+             CueTrack := f7 uint [ range:1..; ]
+             CueClusterPosition := f1 uint;
+             CueBlockNumber := 5378 uint [ range:1..; def:1; ]
+             CueCodecState := ea uint [ def:0; ]
+             CueReference := db container [ card:*; ] {
+               CueRefTime := 96 uint;
+               CueRefCluster := 97 uint;
+               CueRefNumber := 535f uint [ range:1..; def:1; ]
+               CueRefCodecState := eb uint [ def:0; ]
+             }
+           }
+         }
+       }
+
+       // Attachment
+       Attachments := 1941a469 container {
+         AttachedFile := 61a7 container [ card:*; ] {
+           FileDescription := 467e utf8;
+           FileName := 466e utf8;
+           FileMimeType := 4660 string;
+           FileData := 465c binary;
+           FileUID := 46ae uint;
+         }
+       }
+
+       // Chapters
+       Chapters := 1043a770 container {
+         EditionEntry := 45b9 container [ card:*; ] {
+           ChapterAtom := b6 container [ card:*; ] {
+             ChapterUID := 73c4 uint [ range:1..; ]
+             ChapterTimeStart := 91 uint;
+             ChapterTimeEnd := 92 uint;
+             ChapterFlagHidden := 98 uint [ range:0..1; def:0; ]
+             ChapterFlagEnabled := 4598 uint [ range:0..1; def:0; ]
+             ChapterTrack := 8f container {
+               ChapterTrackNumber := 89 uint [ card:*; range:0..1; ]
+               ChapterDisplay := 80 container [ card:*; ] {
+                 ChapString := 85 utf8;
+                 ChapLanguage := 437c string [ card:*; def:"eng"; ]
+                 ChapCountry := 437e string [ card:*; ]
+               }
+             }
+           }
+         }
+       }
+
+       // Tagging
+       Tags := 1254c367 container [ card:*; ] {
+         Tag := 7373 container [ card:*; ] {
+           Targets := 63c0 container {
+             TrackUID := 63c5 uint [ card:*; def:0; ]
+             ChapterUID := 63c4 uint [ card:*; def:0; ]
+             AttachmentUID := 63c6 uint [ card:*; def:0; ]
+           }
+           SimpleTag := 67c8 container [ card:*; ] {
+             TagName := 45a3 utf8;
+             TagString := 4487 utf8;
+             TagBinary := 4485 binary;
+           }
+         }
+       }
+     }
+}
+

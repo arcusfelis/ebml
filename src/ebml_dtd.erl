@@ -1,5 +1,6 @@
 -module(ebml_dtd).
 -export([parse/1]).
+-compile([export_all]).
 
 -record(statement, {
 	name :: name(),
@@ -276,13 +277,7 @@ statement(T1) ->
 %% @doc tblock & eblock
 teblock("elements" ++ T1) ->
 	"{" ++ T2 = strip(T1),
-	
-	Funs = [ fun clean/1
-		   , fun breaker/1
-		   , fun delement/1
-		   ],
-
-	{break, T3, Acc} = run(T2, Funs, []),
+	{break, T3, Acc} = elements(T2),
 	Elem = #eblock{
 		elements=Acc	
 	},
@@ -304,6 +299,17 @@ teblock("types" ++ T1) ->
 	{put, T3, Elem}.
 
 
+%% Without `{'.
+elements(T1) ->
+	
+	Funs = [ fun clean/1
+		   , fun breaker/1
+		   , fun delement/1
+		   ],
+
+	run(T1, Funs, []).
+
+
 %% The simple statements are typically used for value elements and
 %% consists of a name followed by ":=", id, type and optionally
 %% properties.
@@ -317,8 +323,42 @@ teblock("types" ++ T1) ->
 %%              ("{" *DELEMENT "}")/";"
 
 %%   DELEMENT = VELEMENT / CELEMENT / "%children;"
+delement("%children;" ++ T1) ->
+	{put, children, T1};
 delement(T1) ->
-	ok.
+	{Name, T2} = read_name(T1),
+	":=" ++ T3 = strip(T2),
+	T4 = strip(T3),
+	{Id, T5} = read_id(T4),
+	T6 = strip(T5),
+	{Type, T7} = read_type(T6),
+	{break, T8, Props} = 
+		case strip(T7) of
+			"[" ++ Ta -> parse_props(Type, Ta);
+			Ta -> {break, Ta, []}
+		end,
+
+
+	{break, T10, Childrens} = 
+		case T8 of	
+			"{" ++ T9 when Type =:= container ->
+				elements(T9);
+			";" ++ T9 -> 
+				{break, T9, []};
+			_ ->
+				{break, T8, []}
+		end,
+
+	Elem = #delement{
+		name = Name,
+		id = Id,
+		type = Type,
+		properties = Props,
+		elements = Childrens
+	},
+
+	{put, T10, Elem}.
+	
 
 
 
@@ -348,7 +388,12 @@ dtype(T1) ->
 
 
 props_breaker("]" ++ T1) ->
-	{break, T1};
+	case strip(T1) of
+		";" ++ T2 ->
+			{break, T2};
+		T2 ->
+			{break, T2}
+	end;
 props_breaker(T1) -> skip.
 
 
@@ -375,7 +420,7 @@ property(Type) ->
 			'card' ->
 				card(T4);
 			'def' ->
-				def(T4);
+				def(T4, Type);
 			'range' ->
 				range_list(T4, Type);
 			'size' ->
@@ -437,8 +482,8 @@ card([H|T1]) when H =:= $*; H =:= $?; H =:= $1; H =:= $+ ->
 	{put, T2, Elem}.
 	
 %% DEF      = "def"    S ":" S DEFS S ";"
-def(T1) ->
-	{Value, T2} = read_value(T1),
+def(T1, Type) ->
+	{Value, T2} = read_value(T1, Type),
 	";" ++ T3 = strip(T2),
 
 	Elem = #def{
@@ -517,9 +562,14 @@ uint_range(T1) ->
 	{Num, T2} = read_uinteger_value(T1),
 	case T2 of
 		".." ++ T3 ->
-			{Num2, T4} = read_uinteger_value(T3),
-			F = fun(X) -> X >= Num andalso X =< Num2 end,
-			{put, T4, F};
+			try
+				{Num2, T4} = read_uinteger_value(T3),
+				F = fun(X) -> X >= Num andalso X =< Num2 end,
+				{put, T4, F}
+			catch error:_ ->
+				F1 = fun(X) -> X >= Num end,
+				{put, T3, F1}
+			end;
 
 		_ ->
 			F = fun(X) -> X =:= Num end,
@@ -676,12 +726,42 @@ read_value([H|_]=X)
 		read_float_value(X)
 	catch
 		error:{badmatch,{error,{fread,float}}} ->
-		read_integer_value(X)
+		try
+			read_integer_value(X)
+		catch error:_ ->
+			erlang:throw({bad_value, X})
+		end
 	end;
 
 read_value(X) ->
 	read_name(X).
 
+read_id(T1) -> 
+	{ok, [Dec], T2} = io_lib:fread("~16u", T1),
+	{Dec, T2}.
+
+
+read_value(T1, Type) ->
+	try
+		case Type of
+		float ->
+			read_float_value(T1);
+		date ->
+			read_date_value(T1);
+		uint ->
+			read_uinteger_value(T1);
+		int ->
+			read_integer_value(T1);
+		binary ->
+			read_string_value(T1);
+		string ->
+			read_string_value(T1)
+		end
+	catch error:_ -> 
+		read_name(T1)
+	end.
+
+	
 
 
 %%  ExampleFloat := c2 float [ def:6.022E23 ]
@@ -767,24 +847,35 @@ read_plain_string_value([H|T], Acc)
 
 
 
-read_lcomment("\r\n" ++ T, Acc) ->
-	{Acc, T};
+read_lcomment("\n" ++ T, Acc) ->
+	{lists:reverse(Acc), T};
 
 read_lcomment([H|T], Acc) ->
-	read_lcomment([H|T], Acc);
+	read_lcomment(T, [H|Acc]);
 
 read_lcomment([], Acc) ->
 	{lists:reverse(Acc), []}.
 
 
 read_bcomment("*/" ++ T, Acc) ->
-	{Acc, T};
+	{lists:reverse(Acc), T};
 
 read_bcomment([H|T], Acc) ->
-	read_bcomment([H|T], Acc).
+	read_bcomment(T, [H|Acc]).
 
 
 
+load_matroska_dtd() ->
+	Dir = code:priv_dir('ebml'),
+	{ok, Bin} = file:read_file(Dir ++ "/matroska.edtd"),
+	binary_to_list(Bin).
+
+dbg() ->
+	dbg:tracer(),
+	dbg:p(self(), [c]),
+	dbg:tpl({?MODULE, '_', '_'}, x),
+	parse(load_matroska_dtd()).
+	
 	
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -817,5 +908,8 @@ parse_test() ->
 	parse(Types),
 	io:write(user, parse(Header ++ " " ++ Types)).
 
+load_test() ->
+	List = load_matroska_dtd(),
+	parse(List).
 
 -endif.

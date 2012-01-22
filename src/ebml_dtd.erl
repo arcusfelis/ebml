@@ -88,7 +88,7 @@
 -type ordered() :: #ordered{}.
 
 -record(range_item, {
-	check :: function()
+	check :: tuple()
 }).
 
 -type range_item() :: int_range() | uint_range() | float_range() 
@@ -171,7 +171,7 @@ cycle([], _Funs, Acc) ->
 	{eof, lists:reverse(Acc)};
 
 cycle(T1, [], Acc) ->
-	{cycle, T1, lists:reverse(Acc)}.
+	{cycle, T1, Acc}.
 
 		
 
@@ -324,7 +324,7 @@ elements(T1) ->
 
 %%   DELEMENT = VELEMENT / CELEMENT / "%children;"
 delement("%children;" ++ T1) ->
-	{put, children, T1};
+	{put, T1, children};
 delement(T1) ->
 	{Name, T2} = read_name(T1),
 	":=" ++ T3 = strip(T2),
@@ -458,7 +458,11 @@ level(T1) ->
 	{From, T2} = read_uinteger_value(T1),
 	{To, T4} = case T2 of
 		".." ++ T3 ->
-			 read_uinteger_value(T3);
+			try
+				read_uinteger_value(T3)
+			catch error:_ ->
+				{From, T3}
+			end;
 
 		T3 ->
 			{undefined, T3}
@@ -564,15 +568,15 @@ uint_range(T1) ->
 		".." ++ T3 ->
 			try
 				{Num2, T4} = read_uinteger_value(T3),
-				F = fun(X) -> X >= Num andalso X =< Num2 end,
+				F = {'[', Num, Num2, ']'},
 				{put, T4, F}
 			catch error:_ ->
-				F1 = fun(X) -> X >= Num end,
+				F1 = {'[', Num, 'inf', ')'},
 				{put, T3, F1}
 			end;
 
 		_ ->
-			F = fun(X) -> X =:= Num end,
+			F = {'[', Num, Num, ']'},
 			{put, T2, F}
 	end.
 
@@ -582,27 +586,40 @@ uint_range(T1) ->
 int_range(".." ++ T1) ->
 	% .. INT
 	{Num, T2} = read_integer_value(T1),
-	F = fun(X) -> X >= Num end,
+	F = {'[', Num, 'inf', ')'},
 	{put, T2, F};
 
 int_range(T1) ->
 	{Num, T2} = read_integer_value(T1),
 	case T2 of
-	".." ++ T3 ->
-		try
-			{Num2, T4} = read_integer_value(T3),
-			F = fun(X) -> X >= Num andalso X =< Num2 end,
-			{put, T4, F}
+		".." ++ T3 ->
+			try
+				{Num2, T4} = read_integer_value(T3),
+				F = {'[', Num, Num2, ']'},
+				{put, T4, F}
 
-		catch error:_ ->
-			F1 = fun(X) -> X >= Num end,
-			{put, T3, F1}
-		end;
+			catch error:_ ->
+				F1 = {'[', Num, 'inf', ')'},
+				{put, T3, F1}
+			end;
 
-	_ ->
-		F = fun(X) -> X =:= Num end,
-		{put, T2, F}
+		_ ->
+			F = {'[', Num, Num, ']'},
+			{put, T2, F}
 	end.
+
+
+compile_range({'[', Num, Num, ']'}) ->
+	fun(X) -> X =:= Num end;
+
+compile_range({'(', 'inf', Num, ']'}) ->
+	fun(X) -> X =< Num end;
+
+compile_range({'(', Num, 'inf', ']'}) ->
+	fun(X) -> X >= Num end;
+
+compile_range({'(', From, To, ']'}) ->
+	fun(X) -> X >= From andalso X =< To end.
 
 
 %% FLOAT_RANGE = ( ("<" / "<=" / ">" / ">=") FLOAT_DEF ) /
@@ -611,22 +628,22 @@ float_range(T1) ->
 	case T1 of
 		"<=" ++ T2 ->
 			{Num, T3} = read_float_value(T2),
-			F = fun(X) -> X =< Num end,
+			F = {'(', '-inf', Num, ']'},
 			{put, T3, F};
 
 		"<"  ++ T2 ->
 			{Num, T3} = read_float_value(T2),
-			F = fun(X) -> X < Num end,
+			F = {'[', '-inf', Num, ')'},
 			{put, T3, F};
 
 		">=" ++ T2 ->
 			{Num, T3} = read_float_value(T2),
-			F = fun(X) -> X >= Num end,
+			F = {'[', Num, 'inf', ']'},
 			{put, T3, F};
 
 		">"  ++ T2 ->
 			{Num, T3} = read_float_value(T2),
-			F = fun(X) -> X > Num end,
+			F = {'(', Num, 'inf', ')'},
 			{put, T3, F};
 
 		_ ->
@@ -636,38 +653,25 @@ float_range(T1) ->
 			try
 				% ( FLOAT_DEF "<"/"<=" ".." "<"/"<=" FLOAT_DEF )
 				case T2 of
-				"<=" ++ T3 -> Left = inclusive;
-				"<"  ++ T3 -> Left = exclusive
+				"<=" ++ T3 -> Left = '[';
+				"<"  ++ T3 -> Left = '('
 				end,
 
 				case T3 of
-				"..<=" ++ T4 -> Right = inclusive;
-				"..<"  ++ T4 -> Right = exclusive
+				"..<=" ++ T4 -> Right = ']';
+				"..<"  ++ T4 -> Right = ')'
 				end,
 			
 
 				{Num2, T5} = read_value(T4),
 				true = is_number(Num2),
-
-				F = case {Left, Right} of
-						{inclusive, inclusive} ->
-							fun(X) -> X >= Num andalso X =< Num2 end;
-
-						{exclusive, inclusive} ->
-							fun(X) -> X > Num andalso X =< Num2 end;
-
-						{inclusive, exclusive} ->
-							fun(X) -> X >= Num andalso X < Num2 end;
-
-						{exclusive, exclusive} ->
-							fun(X) -> X > Num andalso X < Num2 end
-					end,
+				F = {Left, Num, Num2, Right},
 
 				{put, T5, F}
 
 		catch error:_ ->
 			% FLOATs are exactly equals
-			F1 = fun(X) -> X =:= Num end,
+			F1 = {'[', Num, Num, ']'},
 			{F1, T2}
 		end
 	end.
@@ -736,9 +740,18 @@ read_value([H|_]=X)
 read_value(X) ->
 	read_name(X).
 
+
+%% Every element must have an ID associated, as defined in section
+%% 2.2.  These IDs are expressed in the hexadecimal representation of
+%% their encoded form, e.g. 1a45dfa3.
+
+%%   ID = 1*( 2HEXDIG )
+
 read_id(T1) -> 
 	{ok, [Dec], T2} = io_lib:fread("~16u", T1),
-	{Dec, T2}.
+	Bin = binary:encode_unsigned(Dec),
+	{_Offset, Value, _Remains} = ebml_integer:decode(Bin),
+	{Value, T2}.
 
 
 read_value(T1, Type) ->
@@ -870,6 +883,23 @@ load_matroska_dtd() ->
 	{ok, Bin} = file:read_file(Dir ++ "/matroska.edtd"),
 	binary_to_list(Bin).
 
+
+parse_matroska_dtd() ->
+	SrcList = load_matroska_dtd(),
+	parse(SrcList).
+
+
+load_standard_dtd() ->
+	Dir = code:priv_dir('ebml'),
+	{ok, Bin} = file:read_file(Dir ++ "/ebml.edtd"),
+	binary_to_list(Bin).
+
+
+parse_standard_dtd() ->
+	SrcList = load_standard_dtd(),
+	parse(SrcList).
+
+
 dbg() ->
 	dbg:tracer(),
 	dbg:p(self(), [c]),
@@ -906,7 +936,7 @@ parse_test() ->
 
 	parse(Header),
 	parse(Types),
-	io:write(user, parse(Header ++ " " ++ Types)).
+	parse(Header ++ " " ++ Types).
 
 load_test() ->
 	List = load_matroska_dtd(),

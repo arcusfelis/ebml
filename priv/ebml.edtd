@@ -1,0 +1,17 @@
+define elements {
+  EBML := 1a45dfa3 container [ card:+; ] {
+    EBMLVersion := 4286 uint [ def:1; ]
+    EBMLReadVersion := 42f7 uint [ def:1; ]
+    EBMLMaxIDLength := 42f2 uint [ def:4; ]
+    EBMLMaxSizeLength := 42f3 uint [ def:8; ]
+    DocType := 4282 string [ range:32..126; ]
+    DocTypeVersion := 4287 uint [ def:1; ]
+    DocTypeReadVersion := 4285 uint [ def:1; ]
+  }
+
+  CRC32 := c3 container [ level:1..; card:*; ] {
+    %children;
+    CRC32Value := 42fe binary [ size:4; ]
+  }
+  Void  := ec binary [ level:1..; card:*; ]
+}

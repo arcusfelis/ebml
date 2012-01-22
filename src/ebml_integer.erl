@@ -38,21 +38,21 @@
 %%%   4    2^28  0001 xxxx  xxxx xxxx  xxxx xxxx  xxxx xxxx
 
 %% @doc Read integer from binary.
-%% Returns {integer(), Tail}.
--spec decode(binary()) -> {integer(), binary()}.
-decode(<<1:1, X:7,  T/binary>>) -> {X, T};
-decode(<<1:2, X:14, T/binary>>) -> {X, T};
-decode(<<1:3, X:21, T/binary>>) -> {X, T};
-decode(<<1:4, X:28, T/binary>>) -> {X, T};
+%% Returns {offset::integer(), Value::integer(), Tail}.
+-spec decode(binary()) -> {integer(), integer(), binary()}.
+decode(<<1:1, X:7,  T/binary>>) -> {1, X, T};
+decode(<<1:2, X:14, T/binary>>) -> {2, X, T};
+decode(<<1:3, X:21, T/binary>>) -> {3, X, T};
+decode(<<1:4, X:28, T/binary>>) -> {4, X, T};
 
-decode(<<0:4, _>> = B) -> decode_long(B, 5, 35).
+decode(<<0:4, _/bitstring>> = B) -> decode_long(B, 5, 35).
 
 
 decode_long(B, W, S) ->
 	case B of
 	<<1:W, X:S, T/binary>> -> 
-		{X, T};
-	<<0:W, _>> ->
+		{W, X, T};
+	<<0:W, _/bitstring>> ->
 		decode_long(B, W+1, S+7)
 	end.
 
@@ -84,10 +84,12 @@ width_of_integer(X, W) ->
 encode_test_() ->
 	E = fun ?M:encode/1,
 	D = fun ?M:decode/1,
-    [?_assertEqual(D(E(100)), {100, <<>>})
-	,?_assertEqual(D(E(666)), {666, <<>>})
-	,?_assertEqual(D(E(0)), {0, <<>>})
-	,?_assertEqual(D(E(1)), {1, <<>>})
+    [?_assertEqual(D(E(100)), {1, 100, <<>>})
+	,?_assertEqual(D(E(666)), {2, 666, <<>>})
+	,?_assertEqual(D(E(123456789)), {4, 123456789, <<>>})
+	,?_assertEqual(D(E(123456789123456789)), {9, 123456789123456789, <<>>})
+	,?_assertEqual(D(E(0)), {1, 0, <<>>})
+	,?_assertEqual(D(E(1)), {1, 1, <<>>})
 	].
 
 -endif.

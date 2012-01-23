@@ -6,5 +6,6 @@ cd `dirname $0`
 exec erl -pa $PWD/ebin edit $PWD/deps/*/ebin \
     -boot start_sasl \
     -sname ebml \
-#   -s reloader
+    -s ebml_app \
+    -s ex_reloader
 

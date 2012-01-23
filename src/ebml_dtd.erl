@@ -1,6 +1,27 @@
 -module(ebml_dtd).
--export([parse/1]).
--compile([export_all]).
+
+-behaviour(gen_server).
+-define(SERVER, ?MODULE).
+-define(TABLE, ?MODULE).
+
+%% ------------------------------------------------------------------
+%% API Function Exports
+%% ------------------------------------------------------------------
+
+-export([start_link/0,
+        id_to_type/1,
+        id_to_name/1]).
+
+%% ------------------------------------------------------------------
+%% gen_server Function Exports
+%% ------------------------------------------------------------------
+
+-export([init/1, 
+        handle_call/3, 
+        handle_cast/2, 
+        handle_info/2, 
+        terminate/2, 
+        code_change/3]).
 
 -record(statement, {
 	name :: name(),
@@ -121,6 +142,63 @@
 
 
 
+%% ------------------------------------------------------------------
+%% API Function Definitions
+%% ------------------------------------------------------------------
+
+start_link() ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+
+
+id_to_type(Id) ->
+    try
+        ets:lookup_element(?TABLE, Id, #delement.type)
+    catch error:_ ->
+        'unknown'
+    end.
+
+
+id_to_name(Id) ->
+    try
+        ets:lookup_element(?TABLE, Id, #delement.name)
+    catch error:_ ->
+        % Was not found? Is the table invalid?
+        'unknown'
+    end.
+
+
+%% ------------------------------------------------------------------
+%% gen_server Function Definitions
+%% ------------------------------------------------------------------
+
+init(Args) ->
+    ets:new(?TABLE, [named_table, public, {keypos, #delement.id}]),
+    ets:insert(?TABLE, generate_records()),
+    {ok, Args}.
+
+handle_call(_Request, _From, State) ->
+    {noreply, ok, State}.
+
+handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+terminate(_Reason, _State) ->
+    ok.
+
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+
+%% ------------------------------------------------------------------
+%% Internal Function Definitions
+%% ------------------------------------------------------------------
+
+
+generate_records() ->
+    flatten(parse('ebml')) ++ flatten(parse('matroska')).
 
 
 parse('ebml') ->

@@ -11,6 +11,16 @@
 % Cues 1c53bb6b
 -define('CUES_ID', 206814059).
 
+% Segment
+-define('SEGMENT_ID', 139690087).
+
+% Tracks
+-define('TRACKS_ID', 106212971).
+
+% TrackEntry
+-define('TRACK_ENTRY_ID', 46).
+
+
 -record(header, {
     id,
     size,
@@ -22,13 +32,25 @@
     header,
     name,
     type,
-    children
+    value
 }).
 
 open(FileName) ->
 	Modes = [read, binary],
 	file:open(FileName, Modes).
 
+id(Id) ->
+    fun(#header{id=X}) ->
+        Id =:= X
+    end.
+
+find_subtitles(Fd) ->
+    [_EBML, Matroska] = read_root_headers(Fd),
+    % Matroska is a Segment.
+    [Tracks]  = read_children_headers(Fd, Matroska, id(?TRACKS_ID)),
+    Headers   = read_children_headers(Fd, Tracks, id(?TRACK_ENTRY_ID)),
+    [ header_to_element(Fd, X) || X <- Headers ].
+    
 
 read_all(Fd) ->
     List = read_root_headers(Fd),
@@ -49,23 +71,83 @@ read_children_headers(Fd, #header{size=S, offset=O, position=P}) ->
         end,
     read_headers(V, Fd, P+O, P+O+S, []).
 
+read_children_headers(Fd, #header{size=S, offset=O, position=P}, V) ->
+    read_headers(V, Fd, P+O, P+O+S, []).
+
 
 header_to_element(Fd, Head=#header{id=Id}) ->
     Type = ebml_dtd:id_to_type(Id),
 
-    Childrens = case Type of
+    Value = case Type of
             container ->
                 read_children(Fd, Head);
-            _ -> []
+            binary ->
+                binary;
+            string ->
+                read_binary(Fd, Head);
+            date ->
+                decode_int(read_binary(Fd, Head));
+            int ->
+                decode_int(read_binary(Fd, Head));
+            uint ->
+                decode_uint(read_binary(Fd, Head));
+            float ->
+                decode_float(read_binary(Fd, Head));
+            unknown ->
+                unknown
         end,
 
     #element{
         header = Head,
         name = ebml_dtd:id_to_name(Id),
         type = Type,
-        children = Childrens
+        value = Value
     }.
         
+
+decode_float(Bin) ->
+    Len = bit_size(Bin),
+    <<X:Len/float-big>> = Bin,
+    X.
+        
+
+decode_uint(Bin) ->
+    Len = bit_size(Bin),
+    <<X:Len/unsigned-integer-big>> = Bin,
+    X.
+        
+
+decode_int(Bin) ->
+    Len = bit_size(Bin),
+    <<X:Len/signed-integer-big>> = Bin,
+    X.
+
+%% A set of track types coded on 8 bits 
+%% (1: video, 2: audio, 3: complex, 
+%%  0x10: logo, 0x11: subtitle, 0x12: buttons, 0x20: control).
+track_type(1) ->
+    video;
+track_type(2) ->
+    audio;
+track_type(3) ->
+    complex;
+track_type(16#10) ->
+    logo;
+track_type(16#11) ->
+    subtitle;
+track_type(16#12) ->
+    buttons;
+track_type(16#20) ->
+    control.
+
+
+read_binary(_Fd, #header{size=S}) when S>120 ->
+    too_long;
+
+read_binary(Fd, Head=#header{size=S, offset=O, position=P}) ->
+    {ok, Last} = file:position(Fd, {bof, P+O}),
+	{ok, Bin} = file:read(Fd, S),
+    Bin.
 
 
 read_root_headers(Fd) ->
@@ -123,4 +205,5 @@ test() ->
 	FileName = "/home/user/Videos/Higashi no Eden/"
         "[Frostii]_Eden_of_the_East_-_01_[720p][03B976E4].mkv",
 	{ok, Fd} = open(FileName),
-	read_all(Fd).
+	%read_all(Fd).
+    find_subtitles(Fd).
